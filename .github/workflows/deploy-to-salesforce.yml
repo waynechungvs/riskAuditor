@@ -1,4 +1,4 @@
-name: Universal Salesforce Deploy
+name: Deploy to Salesforce
 
 on:
   workflow_dispatch:
@@ -9,21 +9,18 @@ on:
         default: 'SIT'
         type: choice
         options: [SIT, UAT, PROD]
-
       validate_only:
         description: 'Only Validate? (true = dry run)'
         required: true
         default: 'true'
         type: choice
         options: [true, false]
-
       test_level:
         description: 'Test Level'
         required: true
         default: 'NoTestRun'
         type: choice
         options: [NoTestRun, RunLocalTests, RunAllTestsInOrg, RunSpecifiedTests]
-
       test_classes:
         description: 'Test Class names (comma-separated)'
         required: false
@@ -31,55 +28,38 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
+      - name: Checkout Repo
         uses: actions/checkout@v4
 
       - name: Install Salesforce CLI
         uses: sfdx-actions/setup-sfdx@v1
 
-      - name: Load auth URL for target org
+      - name: Authenticate with Salesforce Org
         run: |
-          if [ "${{ github.event.inputs.target_org }}" = "SIT" ]; then
-            echo "SFDX_AUTH=${{ secrets.SFDX_SIT_URL }}" >> $GITHUB_ENV
-            echo "ORG_ALIAS=DeploySIT" >> $GITHUB_ENV
-          elif [ "${{ github.event.inputs.target_org }}" = "UAT" ]; then
-            echo "SFDX_AUTH=${{ secrets.SFDX_UAT_URL }}" >> $GITHUB_ENV
-            echo "ORG_ALIAS=DeployUAT" >> $GITHUB_ENV
-          else
-            echo "SFDX_AUTH=${{ secrets.SFDX_PROD_URL }}" >> $GITHUB_ENV
-            echo "ORG_ALIAS=DeployPROD" >> $GITHUB_ENV
-          fi
-
-      - name: Authenticate
-        run: |
-          echo "$SFDX_AUTH" > auth.txt
-          sfdx auth:sfdxurl:store -f auth.txt -a $ORG_ALIAS
+          echo "${{ secrets[format('{0}_ORG_SFDX_URL', github.event.inputs.target_org)] }}" > auth_url.txt
+          sf org login sfdx-url --sfdx-url-file auth_url.txt --alias targetOrg --set-default
 
       - name: Determine project type and deploy
         run: |
+          echo "Checking deployment structure..."
+          
           if [ -f "scripts/package.xml" ]; then
-            echo "Detected: MDAPI folder in ./scripts"
-            zip -r mdapi.zip scripts
-            DEPLOY_CMD="sfdx force:mdapi:deploy -u $ORG_ALIAS -f mdapi.zip -w 10"
-          elif [ -f "sfdx-project.json" ]; then
-            echo "Detected: SFDX project structure"
-            DEPLOY_CMD="sfdx force:source:deploy -u $ORG_ALIAS -p force-app/main/default -w 10"
+            echo "Detected metadata format. Deploying with package.xml..."
+            sf project deploy start --metadata-dir scripts --target-org targetOrg \
+              --test-level ${{ github.event.inputs.test_level }} \
+              $([ "${{ github.event.inputs.validate_only }}" == "true" ] && echo "--dry-run") \
+              $([ "${{ github.event.inputs.test_level }}" == "RunSpecifiedTests" ] && echo "--tests ${{ github.event.inputs.test_classes }}")
+          
+          elif [ -d "force-app" ]; then
+            echo "Detected SFDX format. Deploying source..."
+            sf project deploy start --source-dir force-app --target-org targetOrg \
+              --test-level ${{ github.event.inputs.test_level }} \
+              $([ "${{ github.event.inputs.validate_only }}" == "true" ] && echo "--dry-run") \
+              $([ "${{ github.event.inputs.test_level }}" == "RunSpecifiedTests" ] && echo "--tests ${{ github.event.inputs.test_classes }}")
+          
           else
             echo "❌ No recognizable deployment structure found. Aborting."
             exit 1
           fi
 
-          if [[ "${{ github.event.inputs.validate_only }}" == "true" ]]; then
-            DEPLOY_CMD="$DEPLOY_CMD --checkonly"
-          fi
-
-          if [[ "${{ github.event.inputs.test_level }}" == "RunSpecifiedTests" ]]; then
-            DEPLOY_CMD="$DEPLOY_CMD --testlevel RunSpecifiedTests --runtests \"${{ github.event.inputs.test_classes }}\""
-          else
-            DEPLOY_CMD="$DEPLOY_CMD --testlevel ${{ github.event.inputs.test_level }}"
-          fi
-
-          echo "🚀 Executing: $DEPLOY_CMD"
-          eval $DEPLOY_CMD
