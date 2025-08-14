@@ -1,0 +1,43 @@
+name: Generate package.xml
+
+on:
+  workflow_dispatch:
+    inputs:
+      metadataPath:
+        description: 'Path to metadata folder (e.g. force-app/main/default)'
+        required: true
+        default: 'force-app/main/default'
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # ✅ 允許 push commit
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Install XML library
+      run: npm install fast-xml-parser
+
+    - name: Generate package.xml
+      run: node scripts/generatePackageXml.js "${{ github.event.inputs.metadataPath }}"
+
+    - name: Commit package.xml to repo
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+        git add package.xml
+        if git diff --cached --quiet; then
+          echo "No changes to commit."
+        else
+          git commit -m "🔁 Auto-generate package.xml from ${{ github.event.inputs.metadataPath }}"
+          git push
+        fi
