@@ -9,18 +9,28 @@ on:
         default: 'SIT'
         type: choice
         options: [SIT, UAT, PROD]
+
+      deploy_type:
+        description: 'Deploy Type'
+        required: true
+        default: 'packageXml'
+        type: choice
+        options: [packageXml, sourceFolder, metadataApiFolder]
+
       validate_only:
         description: 'Only Validate? (true = dry run)'
         required: true
         default: 'true'
         type: choice
         options: [true, false]
+
       test_level:
         description: 'Test Level'
         required: true
         default: 'NoTestRun'
         type: choice
         options: [NoTestRun, RunLocalTests, RunAllTestsInOrg, RunSpecifiedTests]
+
       test_classes:
         description: 'Test Class names (comma-separated)'
         required: false
@@ -28,38 +38,87 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repo
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Install Salesforce CLI
+      - name: Setup SFDX CLI
         uses: sfdx-actions/setup-sfdx@v1
 
-      - name: Authenticate with Salesforce Org
+      - name: Get Auth URL
+        id: auth
         run: |
-          echo "${{ secrets[format('{0}_ORG_SFDX_URL', github.event.inputs.target_org)] }}" > auth_url.txt
-          sf org login sfdx-url --sfdx-url-file auth_url.txt --alias targetOrg --set-default
+          case "${{ github.event.inputs.target_org }}" in
+            SIT)
+              echo "AUTH_URL=${{ secrets.SFDX_SIT_URL }}" >> $GITHUB_OUTPUT
+              ;;
+            UAT)
+              echo "AUTH_URL=${{ secrets.SFDX_UAT_URL }}" >> $GITHUB_OUTPUT
+              ;;
+            PROD)
+              echo "AUTH_URL=${{ secrets.SFDX_PROD_URL }}" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "❌ Unsupported target_org: ${{ github.event.inputs.target_org }}"
+              exit 1
+              ;;
+          esac
 
-      - name: Determine project type and deploy
+      - name: Authenticate to Org
         run: |
-          echo "Checking deployment structure..."
-          
-          if [ -f "scripts/package.xml" ]; then
-            echo "Detected metadata format. Deploying with package.xml..."
-            sf project deploy start --metadata-dir scripts --target-org targetOrg \
-              --test-level ${{ github.event.inputs.test_level }} \
-              $([ "${{ github.event.inputs.validate_only }}" == "true" ] && echo "--dry-run") \
-              $([ "${{ github.event.inputs.test_level }}" == "RunSpecifiedTests" ] && echo "--tests ${{ github.event.inputs.test_classes }}")
-          
-          elif [ -d "force-app" ]; then
-            echo "Detected SFDX format. Deploying source..."
-            sf project deploy start --source-dir force-app --target-org targetOrg \
-              --test-level ${{ github.event.inputs.test_level }} \
-              $([ "${{ github.event.inputs.validate_only }}" == "true" ] && echo "--dry-run") \
-              $([ "${{ github.event.inputs.test_level }}" == "RunSpecifiedTests" ] && echo "--tests ${{ github.event.inputs.test_classes }}")
-          
+          echo "${{ steps.auth.outputs.AUTH_URL }}" > auth_url.txt
+          sfdx auth:sfdxurl:store -f auth_url.txt -a ci-org
+
+      - name: Deploy to Salesforce
+        run: |
+          DEPLOY_TYPE="${{ github.event.inputs.deploy_type }}"
+          TEST_LEVEL="${{ github.event.inputs.test_level }}"
+          VALIDATE_ONLY="${{ github.event.inputs.validate_only }}"
+          TEST_CLASSES="${{ github.event.inputs.test_classes }}"
+
+          ARGS=""
+          if [[ "$VALIDATE_ONLY" == "true" ]]; then
+            ARGS="$ARGS --checkonly"
+          fi
+
+          if [[ "$TEST_LEVEL" == "RunSpecifiedTests" && -n "$TEST_CLASSES" ]]; then
+            ARGS="$ARGS --testlevel RunSpecifiedTests --runtests $TEST_CLASSES"
           else
-            echo "❌ No recognizable deployment structure found. Aborting."
+            ARGS="$ARGS --testlevel $TEST_LEVEL"
+          fi
+
+          echo "Deploy Type: $DEPLOY_TYPE"
+          echo "Validate only: $VALIDATE_ONLY"
+          echo "Test Level: $TEST_LEVEL"
+
+          if [[ "$DEPLOY_TYPE" == "packageXml" ]]; then
+            if [[ -f "scripts/package.xml" ]]; then
+              sfdx force:source:deploy -u ci-org -x scripts/package.xml $ARGS
+            else
+              echo "❌ scripts/package.xml not found"
+              exit 1
+            fi
+
+          elif [[ "$DEPLOY_TYPE" == "sourceFolder" ]]; then
+            if [[ -d "force-app" ]]; then
+              sfdx force:source:deploy -u ci-org -p force-app $ARGS
+            else
+              echo "❌ force-app folder not found"
+              exit 1
+            fi
+
+          elif [[ "$DEPLOY_TYPE" == "metadataApiFolder" ]]; then
+            if [[ -d "metadata" ]]; then
+              sfdx force:mdapi:deploy -u ci-org -d metadata -w 100 $ARGS
+            else
+              echo "❌ metadata folder not found"
+              exit 1
+            fi
+
+          else
+            echo "❌ Unsupported deploy_type: $DEPLOY_TYPE"
             exit 1
           fi
+
 
