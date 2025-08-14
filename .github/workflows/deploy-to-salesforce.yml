@@ -59,12 +59,16 @@ jobs:
 
       - name: Determine project type and deploy
         run: |
-          if [ -f "sfdx-project.json" ]; then
+          if [ -f "scripts/package.xml" ]; then
+            echo "Detected: MDAPI folder in ./scripts"
+            zip -r mdapi.zip scripts
+            DEPLOY_CMD="sfdx force:mdapi:deploy -u $ORG_ALIAS -f mdapi.zip -w 10"
+          elif [ -f "sfdx-project.json" ]; then
             echo "Detected: SFDX project structure"
             DEPLOY_CMD="sfdx force:source:deploy -u $ORG_ALIAS -p force-app/main/default -w 10"
           else
-            echo "Detected: Metadata format"
-            DEPLOY_CMD="sfdx force:mdapi:deploy -u $ORG_ALIAS -d . -w 10"
+            echo "❌ No recognizable deployment structure found. Aborting."
+            exit 1
           fi
 
           if [[ "${{ github.event.inputs.validate_only }}" == "true" ]]; then
